@@ -21,6 +21,7 @@ class VisaSignal(str, Enum):
 class JobSource(str, Enum):
     GREENHOUSE = "greenhouse"
     LEVER = "lever"
+    ASHBY = "ashby"
     FANTASTIC = "fantastic"
     APIFY_LINKEDIN = "apify_linkedin"
     UNKNOWN = "unknown"      # fallback — should rarely happen, flags a pipeline gap

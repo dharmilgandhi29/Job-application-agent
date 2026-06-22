@@ -1,4 +1,6 @@
 import re
+import html
+from bs4 import BeautifulSoup
 
 
 # Boilerplate patterns to strip before sending a JD to Claude.
@@ -28,19 +30,45 @@ _STRIP_PATTERNS = [
 ]
 
 
+def _strip_html(raw: str) -> str:
+    """
+    Turn HTML (or double-encoded HTML) job descriptions into clean plain text.
+
+    Greenhouse/Ashby send descriptions as HTML, sometimes double-encoded
+    (e.g. '&lt;div&gt;' instead of '<div>'). We unescape entities first so the
+    tags become real tags, then let BeautifulSoup strip them to plain text.
+    """
+    # Unescape twice: handles both normal entities and the double-encoded case
+    # where '<' arrives as '&amp;lt;' or '&lt;'. Two passes is safe — unescaping
+    # already-plain text is a no-op.
+    text = html.unescape(raw)
+    text = html.unescape(text)
+
+    # BeautifulSoup parses the (now real) HTML and extracts text only.
+    # separator='\n' keeps paragraph/section breaks so the text stays readable.
+    soup = BeautifulSoup(text, "html.parser")
+    return soup.get_text(separator="\n")
+
+
 def clean_job_description(raw: str) -> str:
     """
-    Strip boilerplate from a raw job description and cap its length.
+    Clean a raw job description for scoring:
+      1. Strip HTML tags/entities to plain text (NEW)
+      2. Remove boilerplate (benefits, EEO, salary, apply instructions)
+      3. Normalize whitespace and cap length
 
     Returns cleaned text, max 3000 chars. The cap is a backstop so a single
     pathological posting can't blow the token budget — real JDs land well under it.
     """
-    text = raw
+    # Step 1: HTML → plain text, BEFORE the boilerplate regex runs.
+    # (The regex patterns assume plain text, so this has to come first.)
+    text = _strip_html(raw)
 
+    # Step 2: strip boilerplate
     for pattern in _STRIP_PATTERNS:
         text = re.sub(pattern, '', text)
 
-    # Collapse the whitespace the deletions leave behind
+    # Step 3: collapse the whitespace the deletions leave behind
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = re.sub(r'[ \t]{2,}', ' ', text)
     text = text.strip()
