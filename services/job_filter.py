@@ -60,3 +60,63 @@ def passes_title_filter(title: str) -> bool:
 def filter_jobs(jobs: list[JobInput]) -> list[JobInput]:
     """Filter a list of jobs down to those whose titles match target roles."""
     return [job for job in jobs if passes_title_filter(job.title)]
+
+
+
+# US state abbreviations + common US location signals.
+# Used to KEEP US jobs. Matching is permissive — when in doubt, keep the job
+# and let the scorer judge, rather than risk dropping a real US role.
+_US_STATES = {
+    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
+    "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+    "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT",
+    "VA","WA","WV","WI","WY","DC",
+}
+
+_US_SIGNALS = [
+    "united states", "u.s.", "usa", "u.s.a", "remote - us", "remote, us",
+    "remote (us", "us remote", "remote us",
+]
+
+# If a location clearly names a non-US country, drop it.
+_NON_US_SIGNALS = [
+    "canada", "united kingdom", "uk", "london", "ireland", "dublin",
+    "australia", "sydney", "germany", "berlin", "france", "paris",
+    "india", "bangalore", "singapore", "netherlands", "amsterdam",
+    "spain", "japan", "tokyo", "emea", "apac", "latam",
+]
+
+
+def is_us_location(location: str) -> bool:
+    """
+    Permissive US check. Returns True if the location looks US-based OR is
+    ambiguous (we keep ambiguous ones and let the scorer decide). Returns
+    False only when it clearly names a non-US place with no US signal.
+    """
+    if not location:
+        return True  # no location given → keep, let scorer see it
+
+    loc = location.lower()
+
+    # Positive US signals → keep
+    if any(sig in loc for sig in _US_SIGNALS):
+        return True
+    # A US state abbreviation as a word (", CA", ", NY") → keep
+    if any(f", {st.lower()}" in loc or f"{st.lower()}," in loc for st in _US_STATES):
+        return True
+    if "remote" in loc and not any(bad in loc for bad in _NON_US_SIGNALS):
+        return True  # bare "Remote" with no foreign tag → assume US-eligible
+
+    # Clear non-US signal and no US signal above → drop
+    if any(bad in loc for bad in _NON_US_SIGNALS):
+        return False
+
+    # Ambiguous → keep, let the scorer judge
+    return True
+
+
+def filter_us_only(jobs: list[JobInput]) -> list[JobInput]:
+    """Keep only jobs that look US-based (permissive — keeps ambiguous ones)."""
+    return [job for job in jobs if is_us_location(job.location)]
+
+
