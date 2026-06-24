@@ -1,40 +1,53 @@
 """
-run_pipeline.py — the orchestrator.
+run_pipeline.py — the ringmaster.
 
-Ties the whole pipeline together:
-  discover → title filter → US filter → clean → score → ranked output
+Cracks the whip and makes every act perform in order:
+  discover → filter → ditch the ones we've already met → clean → score → save → rank
 
-For now it scores a small SAMPLE (default 10) so we can verify wiring and
-sanity-check scores on real jobs cheaply before scaling to the full set.
+The "ditch the ones we've already met" step is the money-saver — run this twice
+and the second run scores nothing, because the memory bank remembers everyone.
 """
+
 import asyncio
 from dotenv import load_dotenv
 
-load_dotenv()  # load ANTHROPIC_API_KEY from .env before the Claude client is used
+load_dotenv()  # grab the API key from .env before the Claude client wakes up
 
 from services.discovery import discover_all
 from services.job_filter import filter_jobs, filter_us_only
 from services.job_cleaner import clean_job_description
 from services.claude_client import score_batch_jobs
+from services import storage
 
-# How many jobs to score in this run. Small while testing; raise later.
+# How many fresh jobs to score per run. Small while we're poking at it.
 SAMPLE_SIZE = 10
 
 
 async def run(sample_size: int = SAMPLE_SIZE):
-    # 1. Discover everything (free)
+    # 1. Round up everyone (free)
     jobs = await discover_all()
 
-    # 2. Pre-filters (free): role titles, then US-only
+    # 2. Toss the off-target and the off-continent (free)
     jobs = filter_jobs(jobs)
     jobs = filter_us_only(jobs)
-    print(f"\n── After filters: {len(jobs)} jobs match role + US ──")
+    print(f"\n── {len(jobs)} jobs cleared role + US filters ──")
 
-    # 3. Take a sample to score (keeps this test cheap)
+    # 3. Show the bouncer the guest list: only let in faces we haven't scored before
+    jobs = storage.filter_unseen(jobs)
+    print(f"── {len(jobs)} of those are strangers (not yet in the memory bank) ──")
+
+    if not jobs:
+        print("\nNothing new under the sun. Memory bank already knows them all. 🪙\n")
+        return
+
+    # 4. Grab a handful to actually score (keeps the bill tiny while testing)
     sample = jobs[:sample_size]
-    print(f"── Scoring first {len(sample)} (sample) ──\n")
+    print(f"── Scoring {len(sample)} of them this run ──\n")
 
-    # 4. Clean descriptions and shape for the scorer
+    # Keep the JobInput objects around so we can save them with their scores later
+    by_id = {j.job_id: j for j in sample}
+
+    # 5. Tidy up the descriptions and shape them for the scorer
     to_score = []
     for job in sample:
         to_score.append({
@@ -46,17 +59,31 @@ async def run(sample_size: int = SAMPLE_SIZE):
             "source": job.source.value,
         })
 
-    # 5. Score in sub-batches of 5 (matches the scorer's batch limit)
+    # 6. Send them off to be judged, five at a time
     all_scores = []
     for i in range(0, len(to_score), 5):
         batch = to_score[i:i + 5]
         results = await score_batch_jobs(batch)
         all_scores.extend(results)
 
-    # 6. Rank by score, highest first
+    # 7. Stash every verdict in the memory bank so we never re-score these
+    from api.models import JobScore
+    saved = 0
+    for s in all_scores:
+        job = by_id.get(s.get("job_id"))
+        if not job:
+            continue
+        try:
+            storage.save_scored_job(job, JobScore(**s))
+            saved += 1
+        except Exception as e:
+            print(f"  ⚠️  couldn't save {s.get('job_id')}: {e}")
+    print(f"── Tucked {saved} scored jobs into the memory bank ──\n")
+
+    # 8. Line them up, best first
     all_scores.sort(key=lambda s: s.get("score", 0), reverse=True)
 
-    # 7. Show results
+    # 9. The reveal
     print("══ RANKED RESULTS ══\n")
     for s in all_scores:
         print(f"  [{s.get('score')}]  {s.get('role_type')}  |  visa: {s.get('visa_signal')}  |  apply: {s.get('apply')}")
