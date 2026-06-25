@@ -1,11 +1,14 @@
 """
 load_h1b.py — fills the sponsorship memory bank.
 
-Reads the USCIS H-1B Employer Data Hub file (FY2025 + FY2026), boils ~150k raw
-rows down to one tidy row per employer, and stashes it in a `sponsors` table.
+Reads the USCIS H-1B Employer Data Hub file, takes its ~99k unruly rows, and
+wrangles them down to one well-behaved row per employer in a `sponsors` table.
 
-Because we only pulled the two most recent years, everything in here is recent
-by construction — no decade-old IBM ghosts. Run this once per data refresh.
+We keep 2025 and 2026 in SEPARATE bunks, never bunked together — because FY2026
+in this file quits early at Q2, so it's half a year cosplaying as a whole one.
+Show the two side by side and a human can tell "still going strong" from "gone
+quiet" instead of getting bamboozled by a runt of a half-year. Run once per
+data refresh and it rebuilds itself from scratch, no leftovers.
 """
 
 import re
@@ -30,54 +33,57 @@ _SUFFIXES = [
 
 
 def normalize_name(raw: str) -> str:
-    """Squash a messy legal name into a clean matchable key.
+    """Squash a messy legal name into a clean matchable key. Strips the costume
+    so the company underneath is recognizable.
     'ANTHROPIC PBC' -> 'anthropic', '1X TECHNOLOGIES, INC.' -> '1x technologies'."""
     if not isinstance(raw, str):
         return ""
     name = raw.lower()
     name = re.sub(r"[.,&/]", " ", name)          # punctuation -> space
-    name = re.sub(r"\s+", " ", name).strip()      # collapse whitespace
-    # peel off trailing legal suffixes (possibly several: "foo inc llc")
+    name = re.sub(r"\s+", " ", name).strip()      # collapse the whitespace gremlins
+    # peel off trailing legal suffixes (possibly several stacked up: "foo inc llc")
     words = name.split()
     while words and words[-1] in _SUFFIXES:
         words.pop()
     return " ".join(words).strip()
 
+
 @dataclass
 class SponsorMatch:
-    """The spoils of rummaging through the H-1B table for one employer.
+    """The loot from rummaging through the H-1B table for one employer.
 
     `match_type` is really a confidence label wearing a trenchcoat:
-    exact > prefix > ambiguous > none."""
+    exact > prefix > ambiguous > none. The two year fields sleep in separate
+    beds on purpose — 2026 is a half-year, so we never let it sneak into a sum."""
     query: str                        # what we normalized and went hunting for
     match_type: str                   # "exact" | "prefix" | "ambiguous" | "none"
-    raw_name: str | None = None       # the original legal name, for display
+    raw_name: str | None = None       # the original legal name, in its Sunday best
     matched_key: str | None = None    # the normalized key we landed on
-    total_approvals: int = 0
-    most_recent_year: int | None = None
-    candidates: list | None = None    # only populated when ambiguous
+    approvals_2025: int = 0           # full fiscal year, the whole pie
+    approvals_2026: int = 0           # partial — only FY2026 through Q2, a slice
+    total_approvals: int = 0          # 2025 + 2026-to-date, for bucketing later
+    candidates: list | None = None    # only filled in when things get murky (ambiguous)
 
 
 def find_sponsor(conn, company_name):
-    """Find a company in the sponsors table, shrugging off legal-name cruft.
+    """Find a company in the sponsors table, seeing past its legal-name disguise.
 
-    USCIS files everyone under their full legal name, so 'OpenAI' hides inside
-    'openai opco' and 'Ramp' inside 'ramp business' — normalize_name() already
-    peeled INC/LLC/CORP but leaves descriptor words like 'opco'/'business'.
-    Exact matching whiffs on those. We try, in order of how much we trust the
-    answer:
-        1. exact normalized match  — 'openai' == 'openai'
-        2. token-prefix match      — 'openai' fronts 'openai opco'
+    USCIS files everyone under their full Sunday-best legal name, so 'OpenAI'
+    is hiding inside 'openai opco' and 'Ramp' inside 'ramp business'. Exact
+    matching walks right past them, so we try, in descending order of trust:
+        1. exact normalized match  — 'openai' == 'openai', no doubt about it
+        2. token-prefix match      — 'openai' fronts 'openai opco', close enough
 
-    The space in the LIKE pattern is load-bearing: 'ramp %' catches
-    'ramp business' but NOT 'rampart', because word boundaries keep us honest.
-    If a short name fronts several unrelated employers, we refuse to guess and
-    hand the candidates back for a human to judge."""
+    The space in the LIKE pattern is doing heavy lifting: 'ramp %' nabs
+    'ramp business' but snubs 'rampart', because word boundaries keep us honest.
+    If a short name fronts a whole crowd of unrelated employers, we throw up our
+    hands and hand the lineup back for a human to pick from — no wild guessing."""
     target = normalize_name(company_name)
 
     rows = conn.execute(
         """
-        SELECT employer_normalized, total_approvals, most_recent_year, raw_name
+        SELECT employer_normalized, approvals_2025, approvals_2026,
+               total_approvals, raw_name
         FROM sponsors
         WHERE employer_normalized = ?
            OR employer_normalized LIKE ? || ' %'
@@ -88,135 +94,134 @@ def find_sponsor(conn, company_name):
     if not rows:
         return SponsorMatch(query=target, match_type="none")
 
-    # An exact hit always wins — that's the company filing under a clean name.
-    for key, approvals, year, raw in rows:
+    # An exact hit always wins — that's the company filing under a clean name,
+    # no costume, no ambiguity.
+    for key, a25, a26, total, raw in rows:
         if key == target:
-            return SponsorMatch(target, "exact", raw, key, approvals, year)
+            return SponsorMatch(target, "exact", raw, key, a25, a26, total)
 
-    # No exact hit, so everything left is a prefix match. The loader grouped by
-    # employer_normalized, so each row is already a distinct employer.
+    # No exact hit, so everything left came in through the prefix door. The
+    # loader grouped by employer_normalized, so each row is its own distinct beast.
     if len(rows) == 1:
-        key, approvals, year, raw = rows[0]
-        return SponsorMatch(target, "prefix", raw, key, approvals, year)
+        key, a25, a26, total, raw = rows[0]
+        return SponsorMatch(target, "prefix", raw, key, a25, a26, total)
 
-    # Several distinct employers start with this name. Maybe one company filing
-    # under two shells, maybe three strangers. Not our call to make — we surface
-    # them instead of summing strangers together.
+    # A whole gaggle of employers start with this name. Could be one company in
+    # two outfits, could be three total strangers. Not our call — we lay them all
+    # out and let a human sort the family from the lookalikes (never sum strangers).
     candidates = [
-        SponsorMatch(target, "prefix", raw, key, approvals, year)
-        for key, approvals, year, raw in rows
+        SponsorMatch(target, "prefix", raw, key, a25, a26, total)
+        for key, a25, a26, total, raw in rows
     ]
     return SponsorMatch(target, "ambiguous", candidates=candidates)
+
 
 def _connect():
     return sqlite3.connect(DB_PATH)
 
 
 def build_sponsors_table():
-    print("📖  Reading the H-1B file (this is a big one, give it a sec)...")
+    print("📖  Cracking open the H-1B tome (it's a chonky one, hang tight)...")
     df = pd.read_excel(XLSX_PATH, engine="openpyxl")
-    df.columns = df.columns.str.strip()   # trim hidden trailing spaces from headers
-    print(f"    {len(df):,} raw rows in the file.")
+    df.columns = df.columns.str.strip()   # shave the hidden trailing spaces off the headers
+    print(f"    {len(df):,} raw rows tumbled out.")
 
-    # Keep only the columns we need
+    # Keep only the columns we actually came for
     df = df[[COL_YEAR, COL_EMPLOYER, COL_NEW, COL_CONT]].copy()
 
-    # Toss the junk: blank/Null employer rows
+    # Show the junk the door: blank/Null employer rows aren't invited
     df = df[df[COL_EMPLOYER].notna()]
     df = df[df[COL_EMPLOYER].astype(str).str.strip().str.lower() != "null"]
     df = df[df[COL_EMPLOYER].astype(str).str.strip() != ""]
 
-    # Approval counts -> numbers (anything weird becomes 0)
+    # Approval counts -> numbers (anything weird gets benched at 0)
     df[COL_NEW] = pd.to_numeric(df[COL_NEW], errors="coerce").fillna(0)
     df[COL_CONT] = pd.to_numeric(df[COL_CONT], errors="coerce").fillna(0)
     df["approvals"] = df[COL_NEW] + df[COL_CONT]
 
-    # The matchable key
+    # Fiscal year -> number too, so our == 2025 / == 2026 checks don't trip over strings
+    df[COL_YEAR] = pd.to_numeric(df[COL_YEAR], errors="coerce")
+
+    # The matchable key — every employer's true name under the costume
     df["employer_normalized"] = df[COL_EMPLOYER].apply(normalize_name)
     df = df[df["employer_normalized"] != ""]
 
-    print(f"    {len(df):,} usable rows after dropping junk.")
+    print(f"    {len(df):,} usable rows left standing after the bouncer's pass.")
 
-    # Squash duplicates (same employer, many worksites/years) into one row each:
-    #   total_approvals  = summed across everything
-    #   most_recent_year = latest fiscal year they had ANY approval
-    #   raw_name         = one original spelling, for display
+    # Sort each approval into its year's bucket BEFORE grouping. .where(cond, 0)
+    # keeps the count when the row belongs to that year, else zeroes it out — so
+    # summing each column later gives a clean per-year tally per employer.
+    df["appr_2025"] = df["approvals"].where(df[COL_YEAR] == 2025, 0)
+    df["appr_2026"] = df["approvals"].where(df[COL_YEAR] == 2026, 0)
+
+    # Herd all the duplicate rows (one employer, many worksites) into a single
+    # tidy row each — two years kept apart, plus a combined total for bucketing.
     grouped = df.groupby("employer_normalized").agg(
-        total_approvals=("approvals", "sum"),
-        most_recent_year=(COL_YEAR, "max"),
+        approvals_2025=("appr_2025", "sum"),
+        approvals_2026=("appr_2026", "sum"),
         raw_name=(COL_EMPLOYER, "first"),
     ).reset_index()
+    grouped["total_approvals"] = grouped["approvals_2025"] + grouped["approvals_2026"]
 
-    # Only keep employers who actually got someone approved (>0)
+    # Only keep employers who actually got somebody across the line (>0)
     grouped = grouped[grouped["total_approvals"] > 0]
 
-    print(f"    {len(grouped):,} unique employers with real approvals.")
+    print(f"    {len(grouped):,} unique employers who actually sponsored someone.")
 
-    # Write it into the DB, fresh each run
+    # Write it into the DB, wiping the slate clean each run — no stale ghosts
     with _connect() as conn:
         conn.execute("DROP TABLE IF EXISTS sponsors")
         conn.execute("""
             CREATE TABLE sponsors (
                 employer_normalized TEXT PRIMARY KEY,
+                approvals_2025      INTEGER,
+                approvals_2026      INTEGER,   -- partial: FY2026 through Q2 only
                 total_approvals     INTEGER,
-                most_recent_year    INTEGER,
                 raw_name            TEXT
             )
         """)
         conn.executemany(
-            "INSERT OR REPLACE INTO sponsors VALUES (?,?,?,?)",
+            "INSERT OR REPLACE INTO sponsors VALUES (?,?,?,?,?)",
             [
-                (r.employer_normalized, int(r.total_approvals),
-                 int(r.most_recent_year), r.raw_name)
+                (r.employer_normalized, int(r.approvals_2025),
+                 int(r.approvals_2026), int(r.total_approvals), r.raw_name)
                 for r in grouped.itertuples()
             ],
         )
         conn.commit()
 
-    print(f"✅  Sponsorship memory bank loaded: {len(grouped):,} employers.\n")
+    print(f"✅  Sponsorship memory bank stocked: {len(grouped):,} employers on file.\n")
     return grouped
 
 
-def sanity_check():
-    """Peek at whether OUR target companies actually matched. The real test of
-    whether name-normalization is pulling its weight."""
-    from config.companies import COMPANIES
-    print("── Did our target companies match? ──")
-    with _connect() as conn:
-        for display_name, _slug in COMPANIES:
-            key = normalize_name(display_name)
-            row = conn.execute(
-                "SELECT total_approvals, most_recent_year FROM sponsors WHERE employer_normalized = ?",
-                (key,),
-            ).fetchone()
-            if row:
-                print(f"  ✓ {display_name:<18} {row[0]:>5} approvals (latest FY{row[1]})")
-            else:
-                print(f"  ✗ {display_name:<18} no exact match (key tried: '{key}')")
-
 def sanity_check_fuzzy():
-    """Re-run the target roster through the upgraded matcher and see who
-    surfaces now that prefix matching joined the party. The real test of
-    whether legal-name cruft is still costing us real companies."""
+    """Parade our target roster past the matcher and eyeball who shows up, now
+    with both years laid out side by side. Reminder to self: 2026 is a HALF
+    year (stops at Q2), so a dinky 2026 number isn't automatically a cold streak."""
     from config.companies import COMPANIES
-    print("\n🔎 Sniffing around the H-1B table for our targets (now with prefix matching)...\n")
+
+    def _split(m):
+        return (f"{m.total_approvals} total "
+                f"(2025: {m.approvals_2025}, 2026-to-date: {m.approvals_2026})")
+
+    print("\n🔎 Snooping through the H-1B table for our targets...\n")
     with _connect() as conn:
         for display_name, _slug in COMPANIES:
             m = find_sponsor(conn, display_name)
             if m.match_type == "exact":
-                print(f"  ✅ {display_name:<18} → {m.raw_name} "
-                      f"({m.total_approvals} approvals, latest FY{m.most_recent_year})")
+                print(f"  ✅ {display_name:<18} → {m.raw_name}")
+                print(f"        {_split(m)}")
             elif m.match_type == "prefix":
-                print(f"  🟢 {display_name:<18} → {m.raw_name} "
-                      f"({m.total_approvals} approvals) [prefix]")
+                print(f"  🟢 {display_name:<18} → {m.raw_name} [caught on a prefix]")
+                print(f"        {_split(m)}")
             elif m.match_type == "ambiguous":
-                print(f"  🟡 {display_name:<18} → {len(m.candidates)} possible, your call:")
+                print(f"  🟡 {display_name:<18} → {len(m.candidates)} lookalikes, you decide:")
                 for c in m.candidates:
-                    print(f"        - {c.raw_name} "
-                          f"({c.total_approvals} approvals, latest FY{c.most_recent_year})")
+                    print(f"        - {c.raw_name}: {_split(c)}")
             else:
-                print(f"  ⬜ {display_name:<18} → no record "
-                      f"(honest miss — may genuinely not sponsor)")
+                print(f"  ⬜ {display_name:<18} → not in the book "
+                      f"(honest miss — might just not sponsor)")
+
 
 if __name__ == "__main__":
     build_sponsors_table()
