@@ -48,6 +48,10 @@ def _init_db():
                 reasoning     TEXT,
                 apply         INTEGER,            -- SQLite shuns bools, so 0/1 it is
                 seniority_fit INTEGER,
+                -- the visa oracle's read on the COMPANY (filled in by visa_intel)
+                sponsor_status   TEXT,            -- new_hire_sponsor | renewals_only | no_record | unknown
+                sponsor_new      INTEGER,         -- fresh H-1B petitions — the number that speaks to your odds
+                sponsor_renewals INTEGER,         -- renewals — context, not your signal
                 -- where this job is in its life with us
                 status        TEXT DEFAULT 'new', -- new | reviewed | approved | skipped | applied
                 first_seen    TEXT DEFAULT CURRENT_TIMESTAMP
@@ -55,8 +59,36 @@ def _init_db():
         """)
 
 
-# Make sure the brain exists the moment anyone imports this module.
+def _migrate_add_sponsor_columns():
+    """Bolt the visa-oracle columns onto an EXISTING jobs table without a fuss.
+
+    SQLite's ADD COLUMN only works once — run it twice and it pitches a fit
+    ('duplicate column name'). So we ask the table what it already has and only
+    add what's missing. Safe to run on every import: does the work once on an
+    old DB, shrugs politely ever after. Fresh DBs already got these from
+    _init_db, so this just confirms they're there and moves on."""
+    wanted = {
+        "sponsor_status":   "TEXT",
+        "sponsor_new":      "INTEGER",
+        "sponsor_renewals": "INTEGER",
+    }
+    with _connect() as conn:
+        # PRAGMA table_info hands back one row per existing column; row["name"]
+        # is the column's name. That's our "what's already here" checklist.
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        for col, col_type in wanted.items():
+            if col not in existing:
+                # Column names + types are our own constants, never user input,
+                # so the f-string here can't be SQL-injected. (ALTER TABLE won't
+                # take ? placeholders for identifiers anyway.)
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+                print(f"🔧  Added '{col}' to the jobs table.")
+
+
+# Make sure the brain exists — and has its visa columns — the moment anyone
+# imports this module.
 _init_db()
+_migrate_add_sponsor_columns()
 
 
 def get_seen_ids() -> set[str]:
