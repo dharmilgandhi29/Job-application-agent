@@ -107,21 +107,29 @@ def filter_unseen(jobs: list[JobInput]) -> list[JobInput]:
     return [j for j in jobs if j.job_id not in seen]
 
 
-def save_scored_job(job: JobInput, score: JobScore):
-    """Tuck a freshly-scored job into the memory bank. INSERT OR IGNORE means
-    if a sneaky duplicate slips through, we just smile and skip it rather than
-    throwing a fit."""
+def save_scored_job(job: JobInput, score: JobScore, visa):
+    """Tuck a freshly-scored job into the memory bank, now with the visa
+    oracle's read riding along. INSERT OR IGNORE means if a sneaky duplicate
+    slips through, we just smile and skip it rather than throwing a fit.
+
+    `visa` is a VisaIntel (from services.visa_intel). We store its headline
+    status plus the two counts that matter — new hires (your signal) and
+    renewals (context). We deliberately DON'T type-hint it to avoid storage.py
+    importing visa_intel, which imports load_h1b — keeping this module's import
+    graph lean and circular-import-free."""
     with _connect() as conn:
         conn.execute("""
             INSERT OR IGNORE INTO jobs (
                 job_id, title, company, location, job_url, source, description,
-                score, role_type, visa_signal, reasoning, apply, seniority_fit, status
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                score, role_type, visa_signal, reasoning, apply, seniority_fit,
+                sponsor_status, sponsor_new, sponsor_renewals, status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             job.job_id, job.title, job.company, job.location, job.job_url,
             job.source.value, job.description,
             score.score, score.role_type.value, score.visa_signal.value,
-            score.reasoning, int(score.apply), int(score.seniority_fit), "new",
+            score.reasoning, int(score.apply), int(score.seniority_fit),
+            visa.status, visa.new_hires, visa.renewals, "new",
         ))
 
 

@@ -17,6 +17,7 @@ from services.discovery import discover_all
 from services.job_filter import filter_jobs, filter_us_only
 from services.job_cleaner import clean_job_description
 from services.claude_client import score_batch_jobs
+from services.visa_intel import get_visa_signal
 from services import storage
 
 # How many fresh jobs to score per run. Small while we're poking at it.
@@ -66,15 +67,22 @@ async def run(sample_size: int = SAMPLE_SIZE):
         results = await score_batch_jobs(batch)
         all_scores.extend(results)
 
-    # 7. Stash every verdict in the memory bank so we never re-score these
+    # 7. Stash every verdict in the memory bank — now with the visa oracle's
+    #    read on each company riding along. We never re-score these.
     from api.models import JobScore
     saved = 0
     for s in all_scores:
         job = by_id.get(s.get("job_id"))
         if not job:
             continue
+        # Ask the oracle what the H-1B record says about THIS company. Cheap
+        # lookup, once per job — perfectly fine at our scale.
+        visa = get_visa_signal(job.company)
+        s["sponsor_status"] = visa.status        # stash back so the ranking can show it
+        s["sponsor_new"] = visa.new_hires
+        s["sponsor_renewals"] = visa.renewals
         try:
-            storage.save_scored_job(job, JobScore(**s))
+            storage.save_scored_job(job, JobScore(**s), visa)
             saved += 1
         except Exception as e:
             print(f"  ⚠️  couldn't save {s.get('job_id')}: {e}")
@@ -83,11 +91,15 @@ async def run(sample_size: int = SAMPLE_SIZE):
     # 8. Line them up, best first
     all_scores.sort(key=lambda s: s.get("score", 0), reverse=True)
 
-    # 9. The reveal
+    # 9. The reveal — now showing BOTH visa signals side by side:
+    #    what the posting SAYS (visa_signal) vs what the company actually DID (sponsor)
     print("══ RANKED RESULTS ══\n")
     for s in all_scores:
-        print(f"  [{s.get('score')}]  {s.get('role_type')}  |  visa: {s.get('visa_signal')}  |  apply: {s.get('apply')}")
+        print(f"  [{s.get('score')}]  {s.get('role_type')}  |  "
+              f"JD visa: {s.get('visa_signal')}  |  apply: {s.get('apply')}")
         print(f"        {s.get('job_id')}  ({s.get('source')})")
+        print(f"        sponsor history: {s.get('sponsor_status')}  "
+              f"(new: {s.get('sponsor_new')}, renewals: {s.get('sponsor_renewals')})")
         print(f"        {s.get('reasoning')}\n")
 
 
