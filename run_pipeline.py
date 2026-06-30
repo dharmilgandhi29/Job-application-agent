@@ -17,7 +17,7 @@ from services.discovery import discover_all
 from services.job_filter import filter_jobs, filter_us_only
 from services.job_cleaner import clean_job_description
 from services.claude_client import score_batch_jobs
-from services.visa_intel import get_visa_signal
+from services.visa_intel import get_visa_signal, classify_visa_disagreement
 from services import storage
 
 # How many fresh jobs to score per run. Small while we're poking at it.
@@ -67,22 +67,28 @@ async def run(sample_size: int = SAMPLE_SIZE):
         results = await score_batch_jobs(batch)
         all_scores.extend(results)
 
-    # 7. Stash every verdict in the memory bank — now with the visa oracle's
-    #    read on each company riding along. We never re-score these.
+    # 7. Stash every verdict in the memory bank — now with the visa oracle's read
+    #    AND the JD-vs-history reconciliation riding along. We never re-score these.
     from api.models import JobScore
     saved = 0
     for s in all_scores:
         job = by_id.get(s.get("job_id"))
         if not job:
             continue
-        # Ask the oracle what the H-1B record says about THIS company. Cheap
-        # lookup, once per job — perfectly fine at our scale.
+        # Ask the oracle what the H-1B record says about THIS company.
         visa = get_visa_signal(job.company)
-        s["sponsor_status"] = visa.status        # stash back so the ranking can show it
+        # Reconcile what the POSTING said against what the company actually DID.
+        verdict, verdict_note = classify_visa_disagreement(
+            s.get("visa_signal"), visa.status, visa.new_hires
+        )
+        # Stash everything back onto the score dict so the ranking can show it.
+        s["sponsor_status"] = visa.status
         s["sponsor_new"] = visa.new_hires
         s["sponsor_renewals"] = visa.renewals
+        s["visa_verdict"] = verdict
+        s["visa_verdict_note"] = verdict_note
         try:
-            storage.save_scored_job(job, JobScore(**s), visa)
+            storage.save_scored_job(job, JobScore(**s), visa, verdict, verdict_note)
             saved += 1
         except Exception as e:
             print(f"  ⚠️  couldn't save {s.get('job_id')}: {e}")
@@ -91,15 +97,13 @@ async def run(sample_size: int = SAMPLE_SIZE):
     # 8. Line them up, best first
     all_scores.sort(key=lambda s: s.get("score", 0), reverse=True)
 
-    # 9. The reveal — now showing BOTH visa signals side by side:
-    #    what the posting SAYS (visa_signal) vs what the company actually DID (sponsor)
+    # 9. The reveal — the verdict is the headline now: the one-line reconciliation
+    #    of what the posting claims vs what the company's H-1B record actually shows.
     print("══ RANKED RESULTS ══\n")
     for s in all_scores:
-        print(f"  [{s.get('score')}]  {s.get('role_type')}  |  "
-              f"JD visa: {s.get('visa_signal')}  |  apply: {s.get('apply')}")
+        print(f"  [{s.get('score')}]  {s.get('role_type')}  |  apply: {s.get('apply')}")
         print(f"        {s.get('job_id')}  ({s.get('source')})")
-        print(f"        sponsor history: {s.get('sponsor_status')}  "
-              f"(new: {s.get('sponsor_new')}, renewals: {s.get('sponsor_renewals')})")
+        print(f"        🛂 {s.get('visa_verdict')}: {s.get('visa_verdict_note')}")
         print(f"        {s.get('reasoning')}\n")
 
 

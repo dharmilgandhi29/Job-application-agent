@@ -144,6 +144,75 @@ def get_visa_signal(company_name: str) -> VisaIntel:
         cont_2026=m.cont_2026,
     )
 
+# ── The reconciliation: what the POSTING says vs what the company DID ─────────
+# Two truths walk into a bar: the JD's visa_signal (what the posting claims) and
+# the sponsor_status (what the H-1B record shows). This function reconciles them
+# into one honest label. It NEVER tells you to skip a job — the worst it does is
+# shrug and say "no history." You're the human in the loop; this just lays the
+# two facts side by side so you don't have to squint.
+
+def classify_visa_disagreement(jd_signal: str, sponsor_status: str, new_hires: int = 0):
+    """Reconcile the posting's visa language against the company's H-1B record.
+
+    Returns (verdict, note):
+      verdict — a stable, machine-friendly category you can filter & sort on later
+                (e.g. pull every 'silent_but_sponsors' job when deciding where to aim)
+      note    — a plain-English statement of fact, no cheerleading, no 'you should'
+
+    Philosophy, hard-won: visa is a SIGNAL, never a gate. Nothing here ranks a job
+    to the bottom or whispers 'skip it' — you might still apply to a no-sponsor shop
+    to build connections, and that's your call to make, not ours."""
+    jd = (jd_signal or "").lower()
+    sponsor = (sponsor_status or "").lower()
+
+    # Company side is the load-bearing fact. Start from what they actually DID,
+    # then let the JD language sharpen or complicate the picture.
+
+    # ── Company files NEW H-1B petitions (the signal that speaks to your odds) ──
+    if sponsor == "new_hire_sponsor":
+        if jd in ("quiet", "ajar"):
+            return ("silent_but_sponsors",
+                    f"Posting is silent on visas, but the company files new H-1B "
+                    f"petitions ({new_hires} in FY2025–2026). Silence isn't a no.")
+        if jd == "open":
+            return ("aligned_sponsor",
+                    f"Posting signals sponsorship and the record backs it up "
+                    f"({new_hires} new H-1B petitions, FY2025–2026).")
+        if jd == "closed":
+            return ("says_closed_but_sponsors",
+                    f"Posting states no sponsorship, yet the company has a new-hire "
+                    f"H-1B record ({new_hires}). The JD line may be role-specific "
+                    f"or boilerplate — the company clearly sponsors somewhere.")
+
+    # ── Company only RENEWS existing staff, no new petitions ──
+    if sponsor == "renewals_only":
+        return ("renewals_only",
+                "Company renews existing H-1B staff but shows no new-hire petitions "
+                "in this window — a thinner record for an outside hire.")
+
+    # ── No record at all ──
+    if sponsor == "no_record":
+        if jd == "open":
+            return ("claims_but_no_history",
+                    "Posting signals sponsorship, but there's no H-1B record in "
+                    "FY2025–2026. Nothing in the data to confirm the claim.")
+        if jd == "closed":
+            return ("says_closed_no_history",
+                    "Posting states no sponsorship, and there's no H-1B record "
+                    "either way.")
+        return ("no_history",
+                "No H-1B record in FY2025–2026. No track record either direction.")
+
+    # ── Ambiguous company match (e.g. Sierra's twelve lookalikes) ──
+    if sponsor == "unknown":
+        return ("unknown",
+                "Company name matched several unrelated employers — sponsorship "
+                "record is unresolved. Worth a manual check.")
+
+    # ── Defensive catch-all: a sponsor_status we didn't anticipate ──
+    return ("uncategorized",
+            f"Unclassified visa picture (JD: {jd or 'n/a'}, "
+            f"sponsor: {sponsor or 'n/a'}).")
 
 # ── Standalone demo: parade the whole roster past the oracle ──────────────────
 # Lets you eyeball the signal end-to-end before it gets wired into the pipeline.

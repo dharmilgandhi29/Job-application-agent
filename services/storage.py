@@ -52,6 +52,9 @@ def _init_db():
                 sponsor_status   TEXT,            -- new_hire_sponsor | renewals_only | no_record | unknown
                 sponsor_new      INTEGER,         -- fresh H-1B petitions — the number that speaks to your odds
                 sponsor_renewals INTEGER,         -- renewals — context, not your signal
+                -- the JD-vs-history verdict (filled in by visa_intel's classifier)
+                visa_verdict      TEXT,           -- machine-friendly category you can filter/sort by
+                visa_verdict_note TEXT,           -- plain-English fact for when you're eyeballing a job
                 -- where this job is in its life with us
                 status        TEXT DEFAULT 'new', -- new | reviewed | approved | skipped | applied
                 first_seen    TEXT DEFAULT CURRENT_TIMESTAMP
@@ -71,6 +74,8 @@ def _migrate_add_sponsor_columns():
         "sponsor_status":   "TEXT",
         "sponsor_new":      "INTEGER",
         "sponsor_renewals": "INTEGER",
+        "visa_verdict":      "TEXT",
+        "visa_verdict_note": "TEXT",
     }
     with _connect() as conn:
         # PRAGMA table_info hands back one row per existing column; row["name"]
@@ -107,29 +112,30 @@ def filter_unseen(jobs: list[JobInput]) -> list[JobInput]:
     return [j for j in jobs if j.job_id not in seen]
 
 
-def save_scored_job(job: JobInput, score: JobScore, visa):
-    """Tuck a freshly-scored job into the memory bank, now with the visa
-    oracle's read riding along. INSERT OR IGNORE means if a sneaky duplicate
-    slips through, we just smile and skip it rather than throwing a fit.
+def save_scored_job(job: JobInput, score: JobScore, visa, verdict: str, verdict_note: str):
+    """Tuck a freshly-scored job into the memory bank, now with BOTH the visa
+    oracle's read AND the JD-vs-history verdict riding along. INSERT OR IGNORE
+    means a sneaky duplicate gets a polite shrug, not a tantrum.
 
-    `visa` is a VisaIntel (from services.visa_intel). We store its headline
-    status plus the two counts that matter — new hires (your signal) and
-    renewals (context). We deliberately DON'T type-hint it to avoid storage.py
-    importing visa_intel, which imports load_h1b — keeping this module's import
-    graph lean and circular-import-free."""
+    `visa` is a VisaIntel (duck-typed to keep storage.py's imports lean — we
+    never import visa_intel here, which would knot up the import graph).
+    `verdict` / `verdict_note` come from classify_visa_disagreement — the stable
+    category you'll filter on later, plus the plain-English fact for your eyes."""
     with _connect() as conn:
         conn.execute("""
             INSERT OR IGNORE INTO jobs (
                 job_id, title, company, location, job_url, source, description,
                 score, role_type, visa_signal, reasoning, apply, seniority_fit,
-                sponsor_status, sponsor_new, sponsor_renewals, status
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                sponsor_status, sponsor_new, sponsor_renewals,
+                visa_verdict, visa_verdict_note, status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             job.job_id, job.title, job.company, job.location, job.job_url,
             job.source.value, job.description,
             score.score, score.role_type.value, score.visa_signal.value,
             score.reasoning, int(score.apply), int(score.seniority_fit),
-            visa.status, visa.new_hires, visa.renewals, "new",
+            visa.status, visa.new_hires, visa.renewals,
+            verdict, verdict_note, "new",
         ))
 
 
