@@ -8,6 +8,8 @@ from tenacity import (
     retry_if_exception_type, before_sleep_log
 )
 from candidate_profile import CANDIDATE_PROFILE
+from dotenv import load_dotenv
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 client = AsyncAnthropic() 

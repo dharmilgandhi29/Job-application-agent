@@ -6,6 +6,7 @@ from tools.docx_to_pdf import docx_to_pdf
 from tools.research_company import research_company
 from tools.cover_letter import write_cover_letter
 from tools.letter_pdf import letter_to_pdf
+from tools.scrape_job_url import scrape_and_score_url
 
 
 """
@@ -16,11 +17,6 @@ hand Claude a box of tools and a goal, and CLAUDE decides what to do — which t
 to call, in what order, reacting to what it sees. Our code just runs whatever tool
 Claude asks for and hands the result back. The loop repeats until Claude says it's
 done (or we hit a safety cap so it can't run away with your token budget).
-
-First version, deliberately small and safe:
-  • works on jobs already in your DB (no big discovery bill)
-  • prints every decision so you can watch it think
-  • stops BEFORE the expensive tailoring step and asks you to approve
 """
 
 import json
@@ -78,6 +74,21 @@ TOOLS = [
             "required": ["job_id", "why"],
         },
     },
+    {
+        "name": "scrape_url",
+        "description": "Scrape a job posting from a URL the user pasted, score it, and save it "
+                       "to the database (with visa intelligence), just like a discovered job. "
+                       "Use this when the user gives you a job link to evaluate. After scraping, "
+                       "the job is in the database and can be listed, proposed, and produced like "
+                       "any other. Returns the scored result, or a note if the page couldn't be read.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The job posting URL to scrape and evaluate."},
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 
@@ -120,10 +131,27 @@ def handle_propose_for_application(job_id: str, why: str) -> str:
     return f"Noted '{job_id}' as a proposal. ({len(PROPOSED)} so far.)"
 
 
+async def handle_scrape_url(url: str) -> str:
+    """Async handler: scrape + score + save a pasted URL, then report the result
+    so the agent can reason about it (and propose it if it's a fit)."""
+    result = await scrape_and_score_url(url)
+    if not result.get("saved"):
+        return f"Could not use that URL: {result.get('note', 'unknown reason')}"
+    return json.dumps({
+        "job_id": result["job_id"],
+        "title": result["title"],
+        "company": result["company"],
+        "score": result["score"],
+        "visa_verdict": result["visa_verdict"],
+        "reasoning": result["reasoning"],
+    })
+
+
 TOOL_HANDLERS = {
     "list_scored_jobs": handle_list_scored_jobs,
     "get_job_details": handle_get_job_details,
     "propose_for_application": handle_propose_for_application,
+    "scrape_url": handle_scrape_url,
 }
 
 
@@ -163,6 +191,9 @@ async def run_agent(goal: str):
             if handler:
                 try:
                     result = handler(**args)
+                    # Some handlers are async (e.g. scrape_url) — await if needed.
+                    if asyncio.iscoroutine(result):
+                        result = await result
                 except Exception as e:
                     result = f"Tool error: {e}"
             else:
@@ -184,6 +215,7 @@ async def run_agent(goal: str):
         print(f"  • {p['job_id']} — {p['why']}")
     print()
 
+
 # ── The human gate + the produce step ─────────────────────────────────────────
 def get_human_approval(proposals: list[dict]) -> list[dict]:
     """Show the agent's proposals and let the human pick which to actually pursue.
@@ -204,8 +236,10 @@ def get_human_approval(proposals: list[dict]) -> list[dict]:
             chosen.append(proposals[int(token) - 1])
     return chosen
 
+
 # Path to your anchor Word resume — the multi-user seam later (per-user file).
 ANCHOR_DOCX = "Resume_Dharmil_Gandhi.docx"
+
 
 async def produce_for_approved(approved: list[dict]):
     """For each approved job: research the company, tailor your REAL docx resume in
@@ -270,7 +304,7 @@ async def produce_for_approved(approved: list[dict]):
         except Exception as e:
             print(f"   ⚠️  PDF export failed ({e}); the .docx is still at {out_docx}")
 
-# 4b. Write the cover letter (uses the research + your resume text)
+        # 4b. Write the cover letter (uses the research + your resume text)
         print("💌 Writing cover letter...")
         try:
             cl = await write_cover_letter(
@@ -283,8 +317,7 @@ async def produce_for_approved(approved: list[dict]):
             )
             letter = cl.get("cover_letter", "")
 
-            # Save the editable .txt WITH the [PERSONALIZE] markers — that's your
-            # working copy to fill in.
+            # Save the editable .txt WITH the [PERSONALIZE] markers — your working copy.
             cl_txt = f"outputs/cover_letter_{base}.txt"
             with open(cl_txt, "w") as f:
                 f.write(letter)
@@ -314,6 +347,7 @@ async def produce_for_approved(approved: list[dict]):
             for g in gaps:
                 print(f"     • {g[:90]}")
         print()
+
 
 if __name__ == "__main__":
     GOAL = (
