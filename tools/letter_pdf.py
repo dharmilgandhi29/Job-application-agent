@@ -1,3 +1,8 @@
+import re
+from pathlib import Path
+from playwright.async_api import async_playwright
+
+
 """
 letter_pdf.py — the cover-letter typesetter.
 
@@ -44,8 +49,17 @@ def _letter_to_html(letter_text: str) -> str:
 
     html_parts = []
     for p in paras:
-        # Treat a short trailing "Sincerely,\nName" specially if present
-        html_parts.append(f"<p>{p}</p>")
+        # Sign-off block: "Sincerely, Name" or "Sincerely,\nName" → closing and
+        # name on separate lines.
+        m = re.match(r'^(Sincerely|Best|Regards|Best regards|Warm regards|Yours sincerely),?\s+(.+)$', p, re.IGNORECASE)
+        if m:
+            closing, name = m.group(1), m.group(2)
+            html_parts.append(
+                f'<div class="sign-off"><p class="closing">{closing},</p>'
+                f'<p class="name">{name}</p></div>'
+            )
+        else:
+            html_parts.append(f"<p>{p}</p>")
     body = "\n".join(html_parts)
     return f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{_LETTER_CSS}</style></head><body>{body}</body></html>"
 
