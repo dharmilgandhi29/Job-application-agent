@@ -4,6 +4,8 @@ from tools.tailor_swaps import tailor_to_swaps
 from tools.docx_editor import apply_swaps
 from tools.docx_to_pdf import docx_to_pdf
 from tools.research_company import research_company
+from tools.cover_letter import write_cover_letter
+from tools.letter_pdf import letter_to_pdf
 
 
 """
@@ -205,17 +207,20 @@ def get_human_approval(proposals: list[dict]) -> list[dict]:
 # Path to your anchor Word resume — the multi-user seam later (per-user file).
 ANCHOR_DOCX = "Resume_Dharmil_Gandhi.docx"
 
-
 async def produce_for_approved(approved: list[dict]):
     """For each approved job: research the company, tailor your REAL docx resume in
-    place (exact formatting preserved), export it to PDF, and show the change report.
-    Runs the expensive tools ONLY on jobs you approved — bounded by your gate."""
+    place (exact formatting preserved), export to PDF, write a cover letter, and show
+    the change report. Runs the expensive tools ONLY on jobs you approved."""
     if not approved:
         print("\nNothing approved — nothing produced. (No tokens spent.)\n")
         return
 
     # Classify the resume's swappable paragraphs once (cached across jobs).
     swappables = await get_swappable(ANCHOR_DOCX)
+
+    # Resume as plain text for the cover letter (its content, not docx formatting).
+    with open("resume.md") as f:
+        resume_text = f.read()
 
     for p in approved:
         job_id = p["job_id"]
@@ -226,6 +231,7 @@ async def produce_for_approved(approved: list[dict]):
             continue
         job = dict(row)
         jd = job.get("description") or ""
+        research = None  # holds the company briefing if research succeeds
 
         safe_company = "".join(c for c in job["company"] if c.isalnum() or c in " -_").strip().replace(" ", "_")
         base = f"{safe_company}_{job_id}"
@@ -234,7 +240,7 @@ async def produce_for_approved(approved: list[dict]):
         print(f"📋 Producing application for: {job['title']} @ {job['company']}")
         print('='*60)
 
-        # 1. Research the company (Haiku + web search) — grounds the cover letter later
+        # 1. Research the company (Haiku + web search) — grounds the cover letter
         print("🔍 Researching company...")
         try:
             research = await research_company(job["company"], job["title"], jd)
@@ -263,6 +269,40 @@ async def produce_for_approved(approved: list[dict]):
             print(f"   ✅ PDF: {pdf_path}")
         except Exception as e:
             print(f"   ⚠️  PDF export failed ({e}); the .docx is still at {out_docx}")
+
+# 4b. Write the cover letter (uses the research + your resume text)
+        print("💌 Writing cover letter...")
+        try:
+            cl = await write_cover_letter(
+                candidate_name="Dharmil Gandhi",
+                resume_text=resume_text,
+                job_title=job["title"],
+                company=job["company"],
+                job_description=jd,
+                research=research,
+            )
+            letter = cl.get("cover_letter", "")
+
+            # Save the editable .txt WITH the [PERSONALIZE] markers — that's your
+            # working copy to fill in.
+            cl_txt = f"outputs/cover_letter_{base}.txt"
+            with open(cl_txt, "w") as f:
+                f.write(letter)
+
+            # Save a clean PDF draft with markers stripped — ready to submit once
+            # you've personalized it. (Regenerate after editing for the final.)
+            import re as _re
+            clean = _re.sub(r'\[PERSONALIZE:[^\]]*\]', '', letter)
+            clean = _re.sub(r'\n{3,}', '\n\n', clean).strip()
+            cl_pdf = f"outputs/cover_letter_{base}.pdf"
+            await letter_to_pdf(clean, cl_pdf)
+
+            print(f"   ✅ Cover letter: {cl_txt}  (editable)")
+            print(f"   ✅ Cover letter PDF: {cl_pdf}  (markers stripped)")
+            if cl.get("notes"):
+                print(f"   📝 {cl['notes']}")
+        except Exception as e:
+            print(f"   ⚠️  cover letter failed ({e}); continuing.")
 
         # 5. Show what changed + honest gaps, for YOUR review before sending
         print("   ── what the tailoring changed ──")

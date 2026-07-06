@@ -51,18 +51,29 @@ Return ONLY valid JSON, no markdown, no preamble:
   "sources_note": "brief note on what you based this on"
 }"""
 
-
 def _parse_json_response(raw: str) -> dict:
-    text = raw.strip()
+    text = (raw or "").strip()
+    # Strip markdown fences if present
     if text.startswith("```"):
         text = re.sub(r'^```(?:json)?\n?', '', text)
         text = re.sub(r'\n?```$', '', text)
-    # The web-search tool wraps facts in <cite index="...">...</cite> tags.
-    # Strip the tags but KEEP the text inside them — we want the facts, not the
-    # citation scaffolding leaking into a cover letter.
-    text = re.sub(r'</?cite[^>]*>', '', text)
-    return json.loads(text.strip())
-
+    text = text.strip()
+    # The model sometimes wraps the JSON in commentary (common with web search).
+    # Pull out the first {...} object rather than assuming the whole string is JSON.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+        # Nothing parseable — return a safe empty briefing instead of crashing.
+        return {
+            "what_they_do": "",
+            "recent_signal": "",
+            "why_role_likely_open": "unclear",
+            "cover_letter_angles": [],
+            "sources_note": "Research returned no parseable result this run.",
+        }
 
 _RETRY = dict(
     stop=stop_after_attempt(3),
