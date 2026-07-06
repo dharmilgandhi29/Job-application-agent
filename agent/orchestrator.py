@@ -1,6 +1,9 @@
 from pathlib import Path
-from tools.resume_loader import load_resume
-from tools.tailor_resume import tailor_resume
+from tools.classify_resume import get_swappable
+from tools.tailor_swaps import tailor_to_swaps
+from tools.docx_editor import apply_swaps
+from tools.docx_to_pdf import docx_to_pdf
+from tools.research_company import research_company
 
 
 """
@@ -199,16 +202,20 @@ def get_human_approval(proposals: list[dict]) -> list[dict]:
             chosen.append(proposals[int(token) - 1])
     return chosen
 
+# Path to your anchor Word resume — the multi-user seam later (per-user file).
+ANCHOR_DOCX = "Resume_Dharmil_Gandhi.docx"
+
 
 async def produce_for_approved(approved: list[dict]):
-    """For each job the human approved: pull the anchor resume + the job's details
-    + the scorer's keyword hints, tailor the resume, save it, and show the change
-    report. Runs Sonnet once per approved job — bounded by YOUR approval."""
+    """For each approved job: research the company, tailor your REAL docx resume in
+    place (exact formatting preserved), export it to PDF, and show the change report.
+    Runs the expensive tools ONLY on jobs you approved — bounded by your gate."""
     if not approved:
-        print("\nNothing approved — no resumes tailored. (No tokens spent.)\n")
+        print("\nNothing approved — nothing produced. (No tokens spent.)\n")
         return
 
-    anchor = load_resume()  # the multi-user seam: today, your resume.md
+    # Classify the resume's swappable paragraphs once (cached across jobs).
+    swappables = await get_swappable(ANCHOR_DOCX)
 
     for p in approved:
         job_id = p["job_id"]
@@ -218,32 +225,54 @@ async def produce_for_approved(approved: list[dict]):
             print(f"  ⚠️  {job_id} vanished from the DB, skipping.")
             continue
         job = dict(row)
+        jd = job.get("description") or ""
 
-        print(f"\n✍️  Tailoring your resume for: {job['title']} @ {job['company']}...")
-        result = await tailor_resume(
-            anchor_markdown=anchor,
-            job_title=job["title"],
-            company=job["company"],
-            job_description=job.get("description") or "",
-            # scorer hints aren't stored as columns, so we skip them here for now;
-            # the tool works without them (it'll read the JD directly).
-        )
-
-        # Save the tailored resume to outputs/, named by company + job_id
         safe_company = "".join(c for c in job["company"] if c.isalnum() or c in " -_").strip().replace(" ", "_")
-        out_path = Path("outputs") / f"resume_{safe_company}_{job_id}.md"
-        out_path.write_text(result.get("tailored_resume_markdown", ""), encoding="utf-8")
+        base = f"{safe_company}_{job_id}"
 
-        # Show the change report — what changed, what gaps were left honest
-        print(f"   📄 Saved → {out_path}")
-        print("   ── what changed ──")
-        for c in result.get("change_report", []):
-            print(f"     • {c.get('change')}  ↳ {c.get('reason')}")
+        print(f"\n{'='*60}")
+        print(f"📋 Producing application for: {job['title']} @ {job['company']}")
+        print('='*60)
+
+        # 1. Research the company (Haiku + web search) — grounds the cover letter later
+        print("🔍 Researching company...")
+        try:
+            research = await research_company(job["company"], job["title"], jd)
+            print(f"   • {research.get('what_they_do', '')[:90]}")
+            if research.get("recent_signal"):
+                print(f"   • Recent: {research['recent_signal'][:90]}")
+        except Exception as e:
+            print(f"   ⚠️  research failed ({e}); continuing without it.")
+
+        # 2. Tailor the resume as SWAPS against the real docx
+        print("✍️  Tailoring resume...")
+        result = await tailor_to_swaps(swappables, job["title"], job["company"], jd)
+        swaps = result.get("swaps", [])
+
+        # 3. Apply swaps to your REAL docx (formatting preserved), save tailored docx
+        out_docx = f"outputs/resume_{base}.docx"
+        rep = apply_swaps(ANCHOR_DOCX, out_docx, swaps)
+        print(f"   • {len(rep['applied'])} swaps applied, {len(rep['missed'])} missed")
+        if rep["missed"]:
+            print(f"   ⚠️  missed (didn't match): {rep['missed']}")
+
+        # 4. Export the tailored docx → pixel-perfect PDF via Word
+        print("🖨️  Exporting to PDF...")
+        try:
+            pdf_path = docx_to_pdf(out_docx)
+            print(f"   ✅ PDF: {pdf_path}")
+        except Exception as e:
+            print(f"   ⚠️  PDF export failed ({e}); the .docx is still at {out_docx}")
+
+        # 5. Show what changed + honest gaps, for YOUR review before sending
+        print("   ── what the tailoring changed ──")
+        for s in swaps:
+            print(f"     • [{s.get('kind')}] {s.get('reason', '')[:70]}")
         gaps = result.get("gaps_left_honest", [])
         if gaps:
             print("   ── gaps left honest (NOT faked) ──")
             for g in gaps:
-                print(f"     • {g}")
+                print(f"     • {g[:90]}")
         print()
 
 if __name__ == "__main__":
