@@ -1,3 +1,8 @@
+from pathlib import Path
+from tools.resume_loader import load_resume
+from tools.tailor_resume import tailor_resume
+
+
 """
 orchestrator.py — the brain.
 
@@ -174,6 +179,72 @@ async def run_agent(goal: str):
         print(f"  • {p['job_id']} — {p['why']}")
     print()
 
+# ── The human gate + the produce step ─────────────────────────────────────────
+def get_human_approval(proposals: list[dict]) -> list[dict]:
+    """Show the agent's proposals and let the human pick which to actually pursue.
+    THIS is the gate — nothing expensive happens until you say so."""
+    if not proposals:
+        return []
+    print("══ APPROVE PROPOSALS ══")
+    print("The agent proposed these. Which should I tailor your resume for?\n")
+    for i, p in enumerate(proposals, 1):
+        print(f"  [{i}] {p['job_id']}")
+        print(f"      {p['why']}\n")
+    raw = input("Enter the numbers to approve (e.g. '1 3'), or press Enter for none: ").strip()
+    if not raw:
+        return []
+    chosen = []
+    for token in raw.replace(",", " ").split():
+        if token.isdigit() and 1 <= int(token) <= len(proposals):
+            chosen.append(proposals[int(token) - 1])
+    return chosen
+
+
+async def produce_for_approved(approved: list[dict]):
+    """For each job the human approved: pull the anchor resume + the job's details
+    + the scorer's keyword hints, tailor the resume, save it, and show the change
+    report. Runs Sonnet once per approved job — bounded by YOUR approval."""
+    if not approved:
+        print("\nNothing approved — no resumes tailored. (No tokens spent.)\n")
+        return
+
+    anchor = load_resume()  # the multi-user seam: today, your resume.md
+
+    for p in approved:
+        job_id = p["job_id"]
+        with _db() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+        if not row:
+            print(f"  ⚠️  {job_id} vanished from the DB, skipping.")
+            continue
+        job = dict(row)
+
+        print(f"\n✍️  Tailoring your resume for: {job['title']} @ {job['company']}...")
+        result = await tailor_resume(
+            anchor_markdown=anchor,
+            job_title=job["title"],
+            company=job["company"],
+            job_description=job.get("description") or "",
+            # scorer hints aren't stored as columns, so we skip them here for now;
+            # the tool works without them (it'll read the JD directly).
+        )
+
+        # Save the tailored resume to outputs/, named by company + job_id
+        safe_company = "".join(c for c in job["company"] if c.isalnum() or c in " -_").strip().replace(" ", "_")
+        out_path = Path("outputs") / f"resume_{safe_company}_{job_id}.md"
+        out_path.write_text(result.get("tailored_resume_markdown", ""), encoding="utf-8")
+
+        # Show the change report — what changed, what gaps were left honest
+        print(f"   📄 Saved → {out_path}")
+        print("   ── what changed ──")
+        for c in result.get("change_report", []):
+            print(f"     • {c.get('change')}  ↳ {c.get('reason')}")
+        gaps = result.get("gaps_left_honest", [])
+        if gaps:
+            print("   ── gaps left honest (NOT faked) ──")
+            for g in gaps:
+                print(f"     • {g}")
+        print()
 
 if __name__ == "__main__":
     GOAL = (
@@ -182,4 +253,10 @@ if __name__ == "__main__":
         "and propose the ones genuinely worth applying to — explaining why for each. "
         "Don't propose more than 3. Then stop."
     )
-    asyncio.run(run_agent(GOAL))
+
+    async def main():
+        await run_agent(GOAL)            # agent finds & proposes
+        approved = get_human_approval(PROPOSED)   # YOU approve
+        await produce_for_approved(approved)      # tailor resumes for approved only
+
+    asyncio.run(main())
