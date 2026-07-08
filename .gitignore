@@ -6,3 +6,4 @@ __pycache__/
 jobs.db
 data/h1b/
 data/h1b/
+outputs/
