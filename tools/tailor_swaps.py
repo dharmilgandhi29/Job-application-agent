@@ -129,6 +129,18 @@ def _format_swappables(swappables: list[dict]) -> str:
         lines.append(f'[{kind}]\n{text}')
     return "\n\n".join(lines)
 
+def _strip_dashes(text: str) -> str:
+    """Kill em/en dashes the model adds despite instructions. Number ranges → hyphen,
+    clause-break dashes → comma. Deterministic enforcement the prompt can't guarantee."""
+    if not text:
+        return text
+    text = re.sub(r'(\d)\s*[—–]\s*(\d)', r'\1-\2', text)
+    text = re.sub(r'\s+[—–]\s+', ', ', text)
+    text = text.replace('—', ', ').replace('–', '-')
+    text = re.sub(r',\s*,', ',', text)
+    text = re.sub(r'\s+,', ',', text)
+    return text
+
 
 @retry(**_RETRY)
 async def tailor_to_swaps(swappables: list[dict], job_title: str, company: str,
@@ -168,4 +180,9 @@ Return ONLY the JSON object."""
         messages=[{"role": "user", "content": user_message}],
     )
 
-    return _parse_json_response(response.content[0].text)
+    result = _parse_json_response(response.content[0].text)
+    # Strip em-dashes from every rewrite — same enforcement as the cover letter.
+    for swap in result.get("swaps", []):
+        if "new" in swap:
+            swap["new"] = _strip_dashes(swap["new"])
+    return result
