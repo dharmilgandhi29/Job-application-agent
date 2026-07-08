@@ -7,7 +7,7 @@ from tools.research_company import research_company
 from tools.cover_letter import write_cover_letter
 from tools.letter_pdf import letter_to_pdf
 from tools.scrape_job_url import scrape_and_score_url
-
+from config.user import NAME, ANCHOR_DOCX
 
 """
 orchestrator.py — the brain.
@@ -237,8 +237,6 @@ def get_human_approval(proposals: list[dict]) -> list[dict]:
     return chosen
 
 
-# Path to your anchor Word resume — the multi-user seam later (per-user file).
-ANCHOR_DOCX = "Resume_Dharmil_Gandhi.docx"
 
 
 async def produce_for_approved(approved: list[dict]):
@@ -308,7 +306,7 @@ async def produce_for_approved(approved: list[dict]):
         print("💌 Writing cover letter...")
         try:
             cl = await write_cover_letter(
-                candidate_name="Dharmil Gandhi",
+                candidate_name=NAME,
                 resume_text=resume_text,
                 job_title=job["title"],
                 company=job["company"],
