@@ -51,6 +51,35 @@ async def setup_status():
     return JSONResponse({"ready": _is_ready()})
 
 
+@router.get("/api/roles")
+async def get_roles():
+    """Current target_roles from the profile (what the parser found)."""
+    try:
+        data = json.loads(_CONFIG.read_text(encoding="utf-8"))
+        return JSONResponse({"roles": data.get("profile", {}).get("target_roles", [])})
+    except Exception:
+        return JSONResponse({"roles": []})
+
+
+@router.post("/api/roles")
+async def save_roles(payload: dict):
+    """Save the confirmed/edited target_roles list back to user.json."""
+    roles = payload.get("roles", [])
+    roles = [r.strip() for r in roles if isinstance(r, str) and r.strip()]
+    try:
+        data = json.loads(_CONFIG.read_text(encoding="utf-8"))
+    except Exception:
+        return JSONResponse({"ok": False, "error": "No profile to update."}, status_code=400)
+    data.setdefault("profile", {})["target_roles"] = roles
+    _CONFIG.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "roles": roles})
+
+
+@router.get("/confirm-roles", response_class=HTMLResponse)
+async def confirm_roles():
+    return _ROLES
+
+
 @router.post("/api/onboard")
 async def onboard(
     name: str = Form(...),
@@ -248,7 +277,7 @@ go.addEventListener('click', async () => {
   try {
     const r = await fetch('/api/onboard', { method:'POST', body: fd });
     const data = await r.json();
-    if(data.ok){ window.location.href = '/'; }
+    if(data.ok){ window.location.href = '/confirm-roles'; }
     else { err.textContent = data.error || "Something went sideways."; go.disabled=false; go.textContent="Start the investigation"; }
   } catch(e){
     err.textContent = "Couldn't reach the office. Is the server running?";
@@ -260,3 +289,123 @@ go.addEventListener('click', async () => {
 </html>"""
 
 _WELCOME = _WELCOME.replace("__MASCOT__", _MASCOT)
+
+
+_ROLES = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mr. Jober</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{ --paper:#FBF6EC; --card:#FFFDF9; --ink:#2D2A3E; --muted:#9A8F7C;
+    --line:#EBE1CE; --coral:#FF6B4A; --green:#22A45C; }
+  *{box-sizing:border-box;}
+  body{margin:0; background:var(--paper); color:var(--ink); min-height:100vh;
+    font-family:Inter,-apple-system,BlinkMacSystemFont,sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:24px;}
+  .display{font-family:Fraunces,Georgia,serif;}
+  .box{max-width:520px; width:100%;}
+  .top{display:flex; gap:14px; align-items:flex-start; margin-bottom:26px;}
+  .av{width:52px; height:52px; border-radius:14px; background:var(--ink); flex-shrink:0;
+    display:flex; align-items:center; justify-content:center; padding:9px;}
+  h1{font-size:24px; font-weight:800; margin:0 0 4px; letter-spacing:-.02em;}
+  .sub{font-size:14.5px; color:#5A5468; line-height:1.5; margin:0;}
+  .sub b{color:var(--coral);}
+  .label{font-size:12.5px; font-weight:700; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.06em; margin:0 0 12px;}
+  .chips{display:flex; flex-wrap:wrap; gap:9px; margin-bottom:18px; min-height:40px;}
+  .chip{display:inline-flex; align-items:center; gap:8px; background:var(--card);
+    border:2px solid var(--line); border-radius:22px; padding:8px 14px; font-size:14px;
+    font-weight:600; animation:pop .2s cubic-bezier(.2,.8,.2,1);}
+  @keyframes pop{from{transform:scale(.85); opacity:0;}to{transform:scale(1); opacity:1;}}
+  .chip button{border:none; background:none; cursor:pointer; color:var(--muted);
+    font-size:16px; line-height:1; padding:0; display:flex;}
+  .chip button:hover{color:var(--coral);}
+  .addrow{display:flex; gap:10px; margin-bottom:28px;}
+  .addrow input{flex:1; padding:13px 15px; font-size:15px; font-family:inherit;
+    border:2px solid var(--line); border-radius:12px; background:var(--card);
+    color:var(--ink); outline:none; transition:border-color .15s;}
+  .addrow input:focus{border-color:var(--coral);}
+  .addrow button{padding:0 20px; font-size:14px; font-weight:700; font-family:inherit;
+    color:var(--ink); background:var(--card); border:2px solid var(--line);
+    border-radius:12px; cursor:pointer; transition:border-color .15s;}
+  .addrow button:hover{border-color:var(--coral);}
+  .actions{display:flex; gap:12px;}
+  .go{flex:1; padding:15px; font-size:15px; font-weight:700; font-family:inherit;
+    color:#fff; background:var(--coral); border:none; border-radius:12px; cursor:pointer;
+    transition:transform .15s;}
+  .go:hover{transform:translateY(-1px);}
+  .skip{padding:15px 22px; font-size:15px; font-weight:600; font-family:inherit;
+    color:var(--muted); background:none; border:none; cursor:pointer;}
+  .skip:hover{color:var(--ink);}
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="top">
+      <div class="av">__MASCOT__</div>
+      <div>
+        <h1 class="display">Here's what I dug up.</h1>
+        <p class="sub">Based on your resume, these look like the <b>roles you're after</b>. Add any I missed, or toss the ones that don't fit.</p>
+      </div>
+    </div>
+
+    <div class="label">Target roles</div>
+    <div class="chips" id="chips"></div>
+
+    <div class="addrow">
+      <input type="text" id="add" placeholder="Add a role, then press Enter">
+      <button id="addbtn">Add</button>
+    </div>
+
+    <div class="actions">
+      <button class="go" id="go">Looks good, let's go</button>
+      <button class="skip" id="skip">Skip</button>
+    </div>
+  </div>
+
+<script>
+let roles = [];
+const chipsEl = document.getElementById('chips');
+const addEl = document.getElementById('add');
+
+function render(){
+  chipsEl.innerHTML = '';
+  roles.forEach((r, i) => {
+    const c = document.createElement('span');
+    c.className = 'chip';
+    c.innerHTML = `${r} <button title="remove" data-i="${i}">&times;</button>`;
+    c.querySelector('button').addEventListener('click', () => { roles.splice(i,1); render(); });
+    chipsEl.appendChild(c);
+  });
+}
+
+function addRole(){
+  const v = addEl.value.trim();
+  if(v && !roles.some(r => r.toLowerCase() === v.toLowerCase())){ roles.push(v); render(); }
+  addEl.value = '';
+  addEl.focus();
+}
+
+document.getElementById('addbtn').addEventListener('click', addRole);
+addEl.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); addRole(); } });
+
+async function save(){
+  await fetch('/api/roles', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({roles})
+  });
+  window.location.href = '/';
+}
+document.getElementById('go').addEventListener('click', save);
+document.getElementById('skip').addEventListener('click', () => { window.location.href = '/'; });
+
+fetch('/api/roles').then(r => r.json()).then(d => { roles = d.roles || []; render(); });
+</script>
+</body>
+</html>"""
+
+_ROLES = _ROLES.replace("__MASCOT__", _MASCOT)
