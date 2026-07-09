@@ -1,0 +1,36 @@
+{
+  "name": "Your Name",
+  "anchor_docx": "Resume_Your_Name.docx",
+  "resume_md": "resume.md",
+  "profile": {
+    "name": "Your Name",
+    "education": [
+      "MS in Your Field, Your University, GPA X.X, 20XX - 20XX",
+      "BSc in Your Field, Your University, 20XX - 20XX"
+    ],
+    "visa_status": "e.g. US Citizen / Green Card / F1 OPT (STEM) needing H1B later / etc.",
+    "target_roles": [
+      "Data Analyst",
+      "Business Analyst",
+      "AI Analyst"
+    ],
+    "technical_skills": [
+      "Python", "SQL", "Excel", "Tableau", "Machine Learning",
+      "add your real skills here so the scorer and tailoring have accurate material"
+    ],
+    "experience_years": "e.g. 0-2 (recent graduate) / 3-5 / 5+",
+    "experience": [
+      "Job Title, Company — one-line impact statement with a metric",
+      "Job Title, Company — one-line impact statement with a metric"
+    ],
+    "projects": [
+      "Project name — short description of what it does and the tech used",
+      "Project name — short description of what it does and the tech used"
+    ],
+    "preferred_locations": ["New York", "San Francisco", "Remote"],
+    "acceptable_locations": ["Anywhere in USA", "Remote", "Hybrid"],
+    "preferred_industries": [
+      "AI/ML Platforms", "FinTech", "Enterprise SaaS", "Data Analytics"
+    ]
+  }
+}
