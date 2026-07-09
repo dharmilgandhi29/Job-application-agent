@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import scoring, ui
+from api.routes import scoring, ui, onboarding
 
 
 app = FastAPI(
@@ -22,6 +22,7 @@ app.add_middleware(
 # gets its own router and one include_router line here — main.py stays thin.
 app.include_router(scoring.router)
 app.include_router(ui.router)
+app.include_router(onboarding.router)
 
 
 @app.get("/health")

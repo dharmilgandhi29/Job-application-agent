@@ -65,9 +65,13 @@ async def api_jobs():
     return JSONResponse({"jobs": jobs, "stats": stats})
 
 
-@router.get("/", response_class=HTMLResponse)
+@router.get("/")
 async def dashboard():
-    return _PAGE
+    from api.routes.onboarding import _is_ready
+    from fastapi.responses import RedirectResponse, HTMLResponse
+    if not _is_ready():
+        return RedirectResponse(url="/welcome")
+    return HTMLResponse(_PAGE)
 
 
 # The detective mascot, as inline SVG so it's crisp and reusable.
