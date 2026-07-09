@@ -285,6 +285,7 @@ go.addEventListener('click', async () => {
   }
 });
 </script>
+<script src="/static/motion.js"></script>
 </body>
 </html>"""
 
@@ -299,6 +300,7 @@ _ROLES = """<!DOCTYPE html>
 <title>Mr. Jober</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/motion.css">
 <style>
   :root{ --paper:#FBF6EC; --card:#FFFDF9; --ink:#2D2A3E; --muted:#9A8F7C;
     --line:#EBE1CE; --coral:#FF6B4A; --green:#22A45C; }
