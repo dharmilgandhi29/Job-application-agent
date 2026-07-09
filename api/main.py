@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from api.routes import scoring, ui, onboarding
-
 
 app = FastAPI(
     title="Job Search Agent",
@@ -18,7 +19,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Plug in the scoring routes. Each future feature (cover letters, outreach)
+# Serve the shared static assets (motion.css / motion.js and any future static files).
+# Every page links these, so the motion + polish layer is defined once and shared.
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+# Plug in the routes. Each future feature (cover letters, outreach)
 # gets its own router and one include_router line here — main.py stays thin.
 app.include_router(scoring.router)
 app.include_router(ui.router)
