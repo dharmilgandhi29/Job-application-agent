@@ -163,3 +163,53 @@ def update_status(job_id: str, status: str):
     (or skipped, if it didn't make the cut). One small status change at a time."""
     with _connect() as conn:
         conn.execute("UPDATE jobs SET status = ? WHERE job_id = ?", (status, job_id))
+
+# ── Application tracking: status + applied_date ──────────────────────────────
+def _migrate_add_tracking_columns():
+    """Add the application-tracking columns to an existing DB, once. Same safe
+    pattern as the sponsor migration: check what's there, add only what's missing."""
+    wanted = {
+        "applied_date":   "TEXT",   # ISO date the user marked it applied
+        "followup_date":  "TEXT",   # optional: when to nudge / follow up
+        "notes_user":     "TEXT",   # the user's own notes on this application
+    }
+    with _connect() as conn:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        for col, col_type in wanted.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {col_type}")
+                print(f"🔧  Added '{col}' to the jobs table.")
+
+
+_migrate_add_tracking_columns()
+
+
+def set_status(job_id: str, status: str, applied_date: str | None = None,
+               notes: str | None = None):
+    """Move a job along its journey and optionally stamp when it was applied to
+    and any user notes. Only updates the fields you pass."""
+    sets = ["status = ?"]
+    params: list = [status]
+    if applied_date is not None:
+        sets.append("applied_date = ?")
+        params.append(applied_date)
+    if notes is not None:
+        sets.append("notes_user = ?")
+        params.append(notes)
+    params.append(job_id)
+    with _connect() as conn:
+        conn.execute(f"UPDATE jobs SET {', '.join(sets)} WHERE job_id = ?", params)
+
+
+def get_tracked() -> list[dict]:
+    """Every job the user has actually acted on (applied / following up / interview
+    / closed) — the application tracker's data. Freshest applications first."""
+    active = ("applied", "following_up", "interview", "offer", "closed", "rejected")
+    placeholders = ",".join("?" for _ in active)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) "
+            f"ORDER BY applied_date DESC, first_seen DESC",
+            active,
+        ).fetchall()
+    return [dict(r) for r in rows]
